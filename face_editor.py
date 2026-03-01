@@ -4,8 +4,30 @@ from dataclasses import dataclass
 from typing import Optional
 
 import cv2
-import mediapipe as mp
 import numpy as np
+
+try:
+    import mediapipe as mp
+except ModuleNotFoundError as exc:  # pragma: no cover - dependency/runtime guard
+    raise ModuleNotFoundError(
+        "未安装 mediapipe。请先执行 `pip install mediapipe`（或安装 requirements.txt）。"
+    ) from exc
+
+
+def _create_face_mesh():
+    """Create a FaceMesh instance across mediapipe package layouts."""
+    try:
+        face_mesh_module = mp.solutions.face_mesh
+    except AttributeError:
+        # Some builds only expose the Solutions API under mediapipe.python.*
+        from mediapipe.python.solutions import face_mesh as face_mesh_module
+
+    return face_mesh_module.FaceMesh(
+        static_image_mode=True,
+        max_num_faces=1,
+        refine_landmarks=True,
+        min_detection_confidence=0.5,
+    )
 
 
 _FACE_OVAL = [10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288, 397, 365,
@@ -117,12 +139,7 @@ def _shift_hair_color(image: np.ndarray, hair_mask: np.ndarray, hue_shift: float
 
 class FaceEditor:
     def __init__(self) -> None:
-        self._mesh = mp.solutions.face_mesh.FaceMesh(
-            static_image_mode=True,
-            max_num_faces=1,
-            refine_landmarks=True,
-            min_detection_confidence=0.5,
-        )
+        self._mesh = _create_face_mesh()
 
     def detect(self, bgr_image: np.ndarray) -> Optional[FaceLandmarks]:
         rgb = cv2.cvtColor(bgr_image, cv2.COLOR_BGR2RGB)
