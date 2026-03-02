@@ -6,7 +6,14 @@ from typing import Optional, Protocol
 import cv2
 import mediapipe as mp
 import numpy as np
+from PIL import Image
 
+try:
+    import torch
+    from diffusers import StableDiffusionInstructPix2PixPipeline
+except Exception:  # optional runtime dependency
+    torch = None
+    StableDiffusionInstructPix2PixPipeline = None
 
 _FACE_OVAL = [
     10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288, 397, 365, 379, 378, 400, 377,
