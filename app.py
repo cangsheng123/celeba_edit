@@ -83,10 +83,10 @@ class FaceEditorApp:
         self._add_slider("头发饱和度增强", self.hair_sat_var, 0.0, 1.0)
 
         self.mouth_var = tk.DoubleVar(value=1.0)
-        self._add_slider("嘴巴大小", self.mouth_var, 0.60, 1.90)
+        self._add_slider("嘴巴大小", self.mouth_var, 0.70, 1.55)
 
         self.eye_var = tk.DoubleVar(value=1.0)
-        self._add_slider("眼睛大小", self.eye_var, 0.70, 1.90)
+        self._add_slider("眼睛大小", self.eye_var, 0.80, 1.45)
 
         self.slim_var = tk.DoubleVar(value=0.35)
         self._add_slider("瘦脸强度", self.slim_var, 0.0, 1.0)
