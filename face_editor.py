@@ -6,6 +6,14 @@ from typing import Optional
 import cv2
 import mediapipe as mp
 import numpy as np
+from PIL import Image
+
+try:
+    import torch
+    from diffusers import StableDiffusionInstructPix2PixPipeline
+except Exception:  # optional runtime dependency
+    torch = None
+    StableDiffusionInstructPix2PixPipeline = None
 
 
 _FACE_OVAL = [
@@ -34,123 +42,39 @@ def _clamp(value: float, low: float, high: float) -> float:
     return max(low, min(value, high))
 
 
-def _add_border_points(width: int, height: int) -> np.ndarray:
-    return np.array(
-        [
-            [0, 0], [width - 1, 0], [0, height - 1], [width - 1, height - 1],
-            [width // 2, 0], [width // 2, height - 1], [0, height // 2], [width - 1, height // 2],
-        ],
-        dtype=np.float32,
-    )
+def _build_edit_prompt(mouth_scale: float, eye_scale: float, slim_face_strength: float) -> str:
+    instructions = ["high-quality portrait photo", "keep identity", "keep skin texture natural"]
+
+    if mouth_scale > 1.03:
+        instructions.append("slightly larger lips")
+    elif mouth_scale < 0.97:
+        instructions.append("slightly smaller lips")
+
+    if eye_scale > 1.03:
+        instructions.append("larger eyes")
+    elif eye_scale < 0.97:
+        instructions.append("smaller eyes")
+
+    if slim_face_strength > 0.05:
+        instructions.append("slimmer face shape")
+
+    instructions.append("avoid cartoon, avoid deformation")
+    return ", ".join(instructions)
 
 
-def _delaunay_triangles(points: np.ndarray, width: int, height: int) -> list[tuple[int, int, int]]:
-    rect = (0, 0, width, height)
-    subdiv = cv2.Subdiv2D(rect)
-    for p in points:
-        subdiv.insert((float(p[0]), float(p[1])))
+def _safe_crop_box(landmarks: FaceLandmarks, width: int, height: int) -> tuple[int, int, int, int]:
+    oval = landmarks.points[_FACE_OVAL]
+    x, y, w, h = cv2.boundingRect(oval.astype(np.int32))
 
-    triangle_list = subdiv.getTriangleList()
-    triangles: list[tuple[int, int, int]] = []
+    pad_x = int(w * 0.45)
+    pad_top = int(h * 0.65)
+    pad_bottom = int(h * 0.40)
 
-    for t in triangle_list:
-        p1 = np.array([t[0], t[1]], dtype=np.float32)
-        p2 = np.array([t[2], t[3]], dtype=np.float32)
-        p3 = np.array([t[4], t[5]], dtype=np.float32)
-
-        if not (0 <= p1[0] < width and 0 <= p1[1] < height):
-            continue
-        if not (0 <= p2[0] < width and 0 <= p2[1] < height):
-            continue
-        if not (0 <= p3[0] < width and 0 <= p3[1] < height):
-            continue
-
-        idx = []
-        for p in (p1, p2, p3):
-            d = np.linalg.norm(points - p, axis=1)
-            idx.append(int(np.argmin(d)))
-
-        i1, i2, i3 = idx
-        if i1 != i2 and i2 != i3 and i1 != i3:
-            tri = (i1, i2, i3)
-            if tri not in triangles:
-                triangles.append(tri)
-
-    return triangles
-
-
-def _warp_triangle(
-    src: np.ndarray,
-    dst: np.ndarray,
-    t_src: np.ndarray,
-    t_dst: np.ndarray,
-) -> None:
-    r_src = cv2.boundingRect(t_src.astype(np.float32))
-    r_dst = cv2.boundingRect(t_dst.astype(np.float32))
-
-    t_src_rect = np.array([[t_src[i][0] - r_src[0], t_src[i][1] - r_src[1]] for i in range(3)], dtype=np.float32)
-    t_dst_rect = np.array([[t_dst[i][0] - r_dst[0], t_dst[i][1] - r_dst[1]] for i in range(3)], dtype=np.float32)
-
-    patch_src = src[r_src[1]:r_src[1] + r_src[3], r_src[0]:r_src[0] + r_src[2]]
-    if patch_src.size == 0 or r_dst[2] <= 0 or r_dst[3] <= 0:
-        return
-
-    warp_mat = cv2.getAffineTransform(t_src_rect, t_dst_rect)
-    patch_warp = cv2.warpAffine(
-        patch_src,
-        warp_mat,
-        (r_dst[2], r_dst[3]),
-        flags=cv2.INTER_LINEAR,
-        borderMode=cv2.BORDER_REFLECT_101,
-    )
-
-    mask = np.zeros((r_dst[3], r_dst[2], 3), dtype=np.float32)
-    cv2.fillConvexPoly(mask, np.int32(t_dst_rect), (1.0, 1.0, 1.0), lineType=cv2.LINE_AA)
-
-    dst_patch = dst[r_dst[1]:r_dst[1] + r_dst[3], r_dst[0]:r_dst[0] + r_dst[2]].astype(np.float32)
-    dst_patch = dst_patch * (1.0 - mask) + patch_warp.astype(np.float32) * mask
-    dst[r_dst[1]:r_dst[1] + r_dst[3], r_dst[0]:r_dst[0] + r_dst[2]] = np.clip(dst_patch, 0, 255).astype(np.uint8)
-
-
-def _piecewise_affine_warp(image: np.ndarray, src_pts: np.ndarray, dst_pts: np.ndarray) -> np.ndarray:
-    h, w = image.shape[:2]
-    triangles = _delaunay_triangles(src_pts, w, h)
-    out = image.copy()
-
-    for i1, i2, i3 in triangles:
-        t_src = np.array([src_pts[i1], src_pts[i2], src_pts[i3]], dtype=np.float32)
-        t_dst = np.array([dst_pts[i1], dst_pts[i2], dst_pts[i3]], dtype=np.float32)
-        _warp_triangle(image, out, t_src, t_dst)
-
-    return out
-
-
-def _scale_points(points: np.ndarray, indices: list[int], scale: float) -> np.ndarray:
-    if abs(scale - 1.0) < 1e-3:
-        return points
-    edited = points.copy()
-    pts = edited[indices]
-    center = pts.mean(axis=0)
-    edited[indices] = center + (pts - center) * scale
-    return edited
-
-
-def _slim_points(points: np.ndarray, strength: float) -> np.ndarray:
-    if strength <= 1e-3:
-        return points
-
-    edited = points.copy()
-    nose = edited[_NOSE_TIP]
-
-    for idx in _JAW_LEFT:
-        edited[idx] = edited[idx] + (nose - edited[idx]) * (0.28 * strength)
-    for idx in _JAW_RIGHT:
-        edited[idx] = edited[idx] + (nose - edited[idx]) * (0.28 * strength)
-
-    # cheek major points more aggressive than jawline
-    edited[234] = edited[234] + (nose - edited[234]) * (0.35 * strength)
-    edited[454] = edited[454] + (nose - edited[454]) * (0.35 * strength)
-    return edited
+    left = max(0, x - pad_x)
+    top = max(0, y - pad_top)
+    right = min(width, x + w + pad_x)
+    bottom = min(height, y + h + pad_bottom)
+    return left, top, right, bottom
 
 
 def _hair_mask(image_shape: tuple[int, int, int], landmarks: FaceLandmarks) -> np.ndarray:
@@ -188,6 +112,61 @@ def _shift_hair_color(image: np.ndarray, hair_mask: np.ndarray, hue_shift: float
     return np.clip(blend, 0, 255).astype(np.uint8)
 
 
+def _geometric_fallback(image: np.ndarray, landmarks: FaceLandmarks, mouth_scale: float, eye_scale: float, slim: float) -> np.ndarray:
+    points = landmarks.points.copy()
+    dst = points.copy()
+
+    def scale_region(indices: list[int], s: float) -> None:
+        if abs(s - 1.0) < 1e-3:
+            return
+        region = dst[indices]
+        center = region.mean(axis=0)
+        dst[indices] = center + (region - center) * s
+
+    scale_region(_MOUTH, mouth_scale)
+    scale_region(_LEFT_EYE, eye_scale)
+    scale_region(_RIGHT_EYE, eye_scale)
+
+    nose = dst[_NOSE_TIP]
+    for idx in _JAW_LEFT + _JAW_RIGHT:
+        dst[idx] = dst[idx] + (nose - dst[idx]) * (0.22 * slim)
+
+    rect = (0, 0, image.shape[1], image.shape[0])
+    subdiv = cv2.Subdiv2D(rect)
+    border = np.array([[0, 0], [image.shape[1] - 1, 0], [0, image.shape[0] - 1], [image.shape[1] - 1, image.shape[0] - 1]], dtype=np.float32)
+    src_all = np.vstack([points, border])
+    dst_all = np.vstack([dst, border])
+    for p in src_all:
+        subdiv.insert((float(p[0]), float(p[1])))
+
+    out = image.copy()
+    for t in subdiv.getTriangleList():
+        tri = np.array([[t[0], t[1]], [t[2], t[3]], [t[4], t[5]]], dtype=np.float32)
+        if np.any(tri[:, 0] < 0) or np.any(tri[:, 0] >= image.shape[1]) or np.any(tri[:, 1] < 0) or np.any(tri[:, 1] >= image.shape[0]):
+            continue
+        ids = [int(np.argmin(np.linalg.norm(src_all - p, axis=1))) for p in tri]
+        if len(set(ids)) < 3:
+            continue
+        src_tri = src_all[ids].astype(np.float32)
+        dst_tri = dst_all[ids].astype(np.float32)
+
+        r1 = cv2.boundingRect(src_tri)
+        r2 = cv2.boundingRect(dst_tri)
+        src_rect = np.array([[src_tri[i][0] - r1[0], src_tri[i][1] - r1[1]] for i in range(3)], dtype=np.float32)
+        dst_rect = np.array([[dst_tri[i][0] - r2[0], dst_tri[i][1] - r2[1]] for i in range(3)], dtype=np.float32)
+        patch = image[r1[1]:r1[1] + r1[3], r1[0]:r1[0] + r1[2]]
+        if patch.size == 0 or r2[2] <= 0 or r2[3] <= 0:
+            continue
+        mat = cv2.getAffineTransform(src_rect, dst_rect)
+        warped = cv2.warpAffine(patch, mat, (r2[2], r2[3]), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT_101)
+        mask = np.zeros((r2[3], r2[2], 3), dtype=np.float32)
+        cv2.fillConvexPoly(mask, np.int32(dst_rect), (1.0, 1.0, 1.0), lineType=cv2.LINE_AA)
+        target = out[r2[1]:r2[1] + r2[3], r2[0]:r2[0] + r2[2]].astype(np.float32)
+        out[r2[1]:r2[1] + r2[3], r2[0]:r2[0] + r2[2]] = np.clip(target * (1 - mask) + warped.astype(np.float32) * mask, 0, 255).astype(np.uint8)
+
+    return out
+
+
 class FaceEditor:
     def __init__(self) -> None:
         self._mesh = mp.solutions.face_mesh.FaceMesh(
@@ -196,6 +175,25 @@ class FaceEditor:
             refine_landmarks=True,
             min_detection_confidence=0.5,
         )
+        self._pix2pix = None
+        self._pix2pix_available = StableDiffusionInstructPix2PixPipeline is not None and torch is not None
+
+    def _ensure_model(self) -> bool:
+        if not self._pix2pix_available:
+            return False
+        if self._pix2pix is not None:
+            return True
+
+        dtype = torch.float16 if torch.cuda.is_available() else torch.float32
+        self._pix2pix = StableDiffusionInstructPix2PixPipeline.from_pretrained(
+            "timbrooks/instruct-pix2pix",
+            torch_dtype=dtype,
+        )
+        if torch.cuda.is_available():
+            self._pix2pix = self._pix2pix.to("cuda")
+        else:
+            self._pix2pix = self._pix2pix.to("cpu")
+        return True
 
     def detect(self, bgr_image: np.ndarray) -> Optional[FaceLandmarks]:
         rgb = cv2.cvtColor(bgr_image, cv2.COLOR_BGR2RGB)
@@ -223,20 +221,39 @@ class FaceEditor:
         eye_scale = _clamp(eye_scale, 0.70, 1.90)
         slim_face_strength = _clamp(slim_face_strength, 0.0, 1.0)
 
-        h, w = bgr_image.shape[:2]
-        src_pts = landmarks.points.copy()
-        dst_pts = src_pts.copy()
+        output: np.ndarray
+        model_used = False
 
-        dst_pts = _scale_points(dst_pts, _MOUTH, mouth_scale)
-        dst_pts = _scale_points(dst_pts, _LEFT_EYE, eye_scale)
-        dst_pts = _scale_points(dst_pts, _RIGHT_EYE, eye_scale)
-        dst_pts = _slim_points(dst_pts, slim_face_strength)
+        try:
+            if self._ensure_model():
+                h, w = bgr_image.shape[:2]
+                l, t, r, b = _safe_crop_box(landmarks, w, h)
+                crop = bgr_image[t:b, l:r]
+                crop_rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
+                prompt = _build_edit_prompt(mouth_scale, eye_scale, slim_face_strength)
 
-        border = _add_border_points(w, h)
-        src_all = np.vstack([src_pts, border])
-        dst_all = np.vstack([dst_pts, border])
+                image_pil = Image.fromarray(crop_rgb)
+                result = self._pix2pix(
+                    prompt=prompt,
+                    image=image_pil,
+                    num_inference_steps=30,
+                    image_guidance_scale=1.3,
+                    guidance_scale=7.5,
+                ).images[0]
 
-        output = _piecewise_affine_warp(bgr_image, src_all, dst_all)
+                edited_crop = cv2.cvtColor(np.array(result), cv2.COLOR_RGB2BGR)
+                if edited_crop.shape[:2] != crop.shape[:2]:
+                    edited_crop = cv2.resize(edited_crop, (crop.shape[1], crop.shape[0]), interpolation=cv2.INTER_CUBIC)
+
+                output = bgr_image.copy()
+                center = ((l + r) // 2, (t + b) // 2)
+                mask = np.full(crop.shape[:2], 255, dtype=np.uint8)
+                output = cv2.seamlessClone(edited_crop, output, mask, center, cv2.NORMAL_CLONE)
+                model_used = True
+            else:
+                output = _geometric_fallback(bgr_image, landmarks, mouth_scale, eye_scale, slim_face_strength)
+        except Exception:
+            output = _geometric_fallback(bgr_image, landmarks, mouth_scale, eye_scale, slim_face_strength)
 
         mask = _hair_mask(output.shape, landmarks)
         output = _shift_hair_color(output, mask, hair_hue_shift, hair_saturation_boost)
@@ -245,4 +262,6 @@ class FaceEditor:
             f"发色偏移={hair_hue_shift:.0f}, 发色饱和度={hair_saturation_boost:.2f}, "
             f"嘴巴={mouth_scale:.2f}, 眼睛={eye_scale:.2f}, 瘦脸={slim_face_strength:.2f}"
         )
-        return output, f"编辑完成（液化级网格变形）。{applied}"
+        if model_used:
+            return output, f"编辑完成（大模型 InstructPix2Pix）。{applied}"
+        return output, f"编辑完成（几何回退；安装 diffusers+torch 可启用大模型）。{applied}"
