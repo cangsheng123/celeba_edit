@@ -1,12 +1,12 @@
-# CelebA 人脸编辑系统（原型）
+# CelebA 人脸编辑系统（桌面 App）
 
-这是一个面向 **CelebA 人脸图像** 的轻量编辑原型，提供以下常见“批图软件”能力：
+这是一个**非浏览器**的人脸编辑系统，直接运行桌面应用即可使用，支持：
 
 - 头发颜色调整
 - 嘴巴大小调整
+- 眼睛大小调整
 - 瘦脸强度调整
-
-> 当前方案采用传统视觉（MediaPipe 人脸关键点 + OpenCV 局部形变/颜色映射）实现，适合快速搭建可交互演示界面。
+- 编辑结果保存
 
 ## 快速启动
 
@@ -17,18 +17,23 @@ pip install -r requirements.txt
 python app.py
 ```
 
-浏览器访问：`http://localhost:7860`
+运行后会打开桌面窗口（Tkinter），无需浏览器。
 
-## 项目结构
+## 系统组成
 
-- `app.py`: Gradio 前端界面与交互逻辑
-- `face_editor.py`: 人脸检测、关键点定位、发色/嘴巴/瘦脸编辑算法
-- `requirements.txt`: 依赖
+- `app.py`：桌面 App 界面（上传、参数调节、应用编辑、保存结果）
+- `face_editor.py`：人脸关键点检测与图像编辑算法
+- `requirements.txt`：依赖列表
 
-## 后续升级建议（真正“CelebA 级”可控编辑）
+## 功能流程
 
-1. 使用 CelebA / CelebA-HQ 训练 StyleGAN 或扩散模型。
-2. 基于属性方向（hair color/smile/age）做 latent editing。
-3. 用分割模型（例如 BiSeNet）替代启发式头发区域，提升发色编辑稳定性。
-4. 增加多属性联动约束，减少属性冲突。
+1. 上传人脸图像。
+2. 调整发色、发色饱和度、嘴巴大小、眼睛大小、瘦脸强度。
+3. 点击“应用编辑”实时生成结果。
+4. 点击“保存结果”导出图片。
 
+## 技术方案
+
+- 感知层：MediaPipe Face Mesh 提取人脸关键点。
+- 编辑层：OpenCV 局部几何形变 + HSV 发色映射。
+- 交互层：Tkinter + Pillow 桌面可视化界面。
