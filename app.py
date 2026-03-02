@@ -48,7 +48,7 @@ class FaceEditorApp:
         ttk.Label(header, text="✨ CelebA 人脸编辑系统（非浏览器 App）", style="Title.TLabel").pack(anchor="w")
         ttk.Label(
             header,
-            text="支持：发色调整 / 嘴巴大小 / 眼睛大小 / 瘦脸。上传图片后点击“应用编辑”。",
+            text="支持：发色/嘴巴/眼睛/瘦脸/鼻翼/下巴/高清增强。上传图片后点击“应用编辑”。",
             style="Desc.TLabel",
         ).pack(anchor="w", pady=(2, 0))
 
@@ -86,10 +86,19 @@ class FaceEditorApp:
         self._add_slider("嘴巴大小", self.mouth_var, 0.70, 1.55)
 
         self.eye_var = tk.DoubleVar(value=1.0)
-        self._add_slider("眼睛大小", self.eye_var, 0.80, 1.45)
+        self._add_slider("眼睛大小", self.eye_var, 0.85, 1.30)
 
         self.slim_var = tk.DoubleVar(value=0.35)
         self._add_slider("瘦脸强度", self.slim_var, 0.0, 1.0)
+
+        self.nose_var = tk.DoubleVar(value=1.0)
+        self._add_slider("鼻翼宽度", self.nose_var, 0.85, 1.15)
+
+        self.chin_var = tk.DoubleVar(value=1.0)
+        self._add_slider("下巴长度", self.chin_var, 0.90, 1.20)
+
+        self.hd_var = tk.DoubleVar(value=1.30)
+        self._add_slider("高清输出倍数", self.hd_var, 1.0, 2.0)
 
         ttk.Button(self.control_panel, text="应用编辑", command=self.apply_edit).pack(fill="x", pady=(16, 6))
         ttk.Button(self.control_panel, text="保存结果", command=self.save_image).pack(fill="x", pady=6)
@@ -171,6 +180,9 @@ class FaceEditorApp:
             mouth_scale=float(self.mouth_var.get()),
             eye_scale=float(self.eye_var.get()),
             slim_face_strength=float(self.slim_var.get()),
+            nose_scale=float(self.nose_var.get()),
+            chin_scale=float(self.chin_var.get()),
+            hd_upscale=float(self.hd_var.get()),
         )
 
         self.edited_bgr = edited
@@ -203,6 +215,9 @@ class FaceEditorApp:
         self.mouth_var.set(1.0)
         self.eye_var.set(1.0)
         self.slim_var.set(0.35)
+        self.nose_var.set(1.0)
+        self.chin_var.set(1.0)
+        self.hd_var.set(1.30)
         self.status_var.set("参数已重置。")
 
     def run(self) -> None:
