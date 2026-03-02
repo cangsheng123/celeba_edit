@@ -13,6 +13,8 @@ _FACE_OVAL = [10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288, 397, 36
               234, 127, 162, 21, 54, 103, 67, 109]
 _MOUTH = [61, 146, 91, 181, 84, 17, 314, 405, 321, 375, 291, 308,
           324, 318, 402, 317, 14, 87, 178, 88, 95]
+_LEFT_EYE = [33, 133, 160, 159, 158, 157, 173, 153, 144, 145]
+_RIGHT_EYE = [263, 362, 385, 386, 387, 388, 466, 373, 374, 380]
 _LEFT_CHEEK = 234
 _RIGHT_CHEEK = 454
 
@@ -30,6 +32,10 @@ class FaceLandmarks:
         return cls(points=pts)
 
 
+def _clamp(value: float, low: float, high: float) -> float:
+    return max(low, min(value, high))
+
+
 def _local_scale_warp(image: np.ndarray, center: tuple[float, float], radius: float, scale: float) -> np.ndarray:
     h, w = image.shape[:2]
     y, x = np.indices((h, w), dtype=np.float32)
@@ -39,8 +45,6 @@ def _local_scale_warp(image: np.ndarray, center: tuple[float, float], radius: fl
     dist = np.sqrt(dx * dx + dy * dy)
 
     mask = dist < radius
-    safe_dist = np.maximum(dist, 1e-6)
-
     factor = np.ones_like(dist, dtype=np.float32)
     factor[mask] = 1 - (1 - 1 / scale) * (1 - dist[mask] / radius) ** 2
 
@@ -62,7 +66,6 @@ def _slim_face_warp(image: np.ndarray, landmarks: FaceLandmarks, strength: float
 
     left = pts[_LEFT_CHEEK]
     right = pts[_RIGHT_CHEEK]
-    face_center_x = (left[0] + right[0]) / 2
     radius = np.linalg.norm(right - left) * 0.35
 
     sigma2 = (radius ** 2) + 1e-6
@@ -115,6 +118,21 @@ def _shift_hair_color(image: np.ndarray, hair_mask: np.ndarray, hue_shift: float
     return np.clip(blend, 0, 255).astype(np.uint8)
 
 
+def _eye_enlarge_warp(image: np.ndarray, landmarks: FaceLandmarks, eye_scale: float) -> np.ndarray:
+    if abs(eye_scale - 1.0) < 1e-3:
+        return image
+
+    output = image
+    for eye_indices in (_LEFT_EYE, _RIGHT_EYE):
+        eye_pts = landmarks.points[eye_indices]
+        center = eye_pts.mean(axis=0)
+        eye_extent = np.linalg.norm(eye_pts.max(axis=0) - eye_pts.min(axis=0))
+        radius = max(eye_extent * 1.15, 1.0)
+        output = _local_scale_warp(output, (center[0], center[1]), radius, eye_scale)
+
+    return output
+
+
 class FaceEditor:
     def __init__(self) -> None:
         self._mesh = mp.solutions.face_mesh.FaceMesh(
@@ -138,25 +156,30 @@ class FaceEditor:
         hair_hue_shift: float = 0.0,
         hair_saturation_boost: float = 0.0,
         mouth_scale: float = 1.0,
+        eye_scale: float = 1.0,
         slim_face_strength: float = 0.0,
     ) -> tuple[np.ndarray, str]:
         landmarks = self.detect(bgr_image)
         if landmarks is None:
             return bgr_image, "未检测到人脸，请尝试更清晰的正脸图片。"
 
-        output = bgr_image.copy()
+        hair_saturation_boost = _clamp(hair_saturation_boost, 0.0, 1.0)
+        mouth_scale = _clamp(mouth_scale, 0.75, 1.35)
+        eye_scale = _clamp(eye_scale, 0.8, 1.4)
+        slim_face_strength = _clamp(slim_face_strength, 0.0, 1.0)
 
-        # 瘦脸
+        output = bgr_image.copy()
         output = _slim_face_warp(output, landmarks, slim_face_strength)
 
-        # 嘴巴大小
         mouth_pts = landmarks.points[_MOUTH]
         mouth_center = mouth_pts.mean(axis=0)
         mouth_radius = max(np.linalg.norm(mouth_pts.max(axis=0) - mouth_pts.min(axis=0)) * 0.9, 1.0)
         output = _local_scale_warp(output, (mouth_center[0], mouth_center[1]), mouth_radius, mouth_scale)
 
-        # 头发颜色
+        output = _eye_enlarge_warp(output, landmarks, eye_scale)
+
         mask = _hair_mask(output.shape, landmarks)
         output = _shift_hair_color(output, mask, hair_hue_shift, hair_saturation_boost)
 
-        return output, "编辑完成（基于人脸关键点与局部形变）。"
+        applied = f"发色偏移={hair_hue_shift:.0f}, 发色饱和度={hair_saturation_boost:.2f}, 嘴巴={mouth_scale:.2f}, 眼睛={eye_scale:.2f}, 瘦脸={slim_face_strength:.2f}"
+        return output, f"编辑完成。{applied}"
