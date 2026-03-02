@@ -204,6 +204,12 @@ class FaceEditorApp:
     def run(self) -> None:
         self.root.mainloop()
 
+    clear_button.click(
+        fn=lambda: (None, None, "已清空"),
+        inputs=[],
+        outputs=[input_image, output_image, status],
+    )
+
 
 if __name__ == "__main__":
     app = FaceEditorApp()
