@@ -83,10 +83,10 @@ class FaceEditorApp:
         self._add_slider("头发饱和度增强", self.hair_sat_var, 0.0, 1.0)
 
         self.mouth_var = tk.DoubleVar(value=1.0)
-        self._add_slider("嘴巴大小", self.mouth_var, 0.75, 1.35)
+        self._add_slider("嘴巴大小", self.mouth_var, 0.60, 1.90)
 
         self.eye_var = tk.DoubleVar(value=1.0)
-        self._add_slider("眼睛大小", self.eye_var, 0.8, 1.4)
+        self._add_slider("眼睛大小", self.eye_var, 0.70, 1.90)
 
         self.slim_var = tk.DoubleVar(value=0.35)
         self._add_slider("瘦脸强度", self.slim_var, 0.0, 1.0)
@@ -148,7 +148,7 @@ class FaceEditorApp:
         if not file_path:
             return
 
-        bgr = cv2.imread(file_path)
+        bgr = self._read_image(file_path)
         if bgr is None:
             messagebox.showerror("错误", "无法读取图片，请重新选择。")
             return
@@ -190,7 +190,11 @@ class FaceEditorApp:
         if not out_path:
             return
 
-        cv2.imwrite(out_path, self.edited_bgr)
+        saved = self._write_image(out_path, self.edited_bgr)
+        if not saved:
+            self.status_var.set("保存失败，请检查路径是否可写。")
+            return
+
         self.status_var.set(f"已保存到：{out_path}")
 
     def reset_params(self) -> None:
@@ -203,6 +207,22 @@ class FaceEditorApp:
 
     def run(self) -> None:
         self.root.mainloop()
+
+    @staticmethod
+    def _read_image(path: str) -> np.ndarray | None:
+        data = np.fromfile(path, dtype=np.uint8)
+        if data.size == 0:
+            return None
+        return cv2.imdecode(data, cv2.IMREAD_COLOR)
+
+    @staticmethod
+    def _write_image(path: str, image: np.ndarray) -> bool:
+        ext = Path(path).suffix.lower() or ".png"
+        ok, encoded = cv2.imencode(ext, image)
+        if not ok:
+            return False
+        encoded.tofile(path)
+        return True
 
 
 
