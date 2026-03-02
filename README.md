@@ -35,7 +35,7 @@ python app.py
 ## 技术方案
 
 - 感知层：MediaPipe Face Mesh 提取人脸关键点。
-- 编辑层：OpenCV 局部几何形变 + HSV 发色映射。
+- 编辑层：FaceFusion 风格处理管线（几何处理器 + 美颜处理器 + 发色处理器 + 高清处理器）。
 - 交互层：Tkinter + Pillow 桌面可视化界面。
 
 
